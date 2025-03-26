@@ -2,9 +2,7 @@ const root = @import("root");
 const std = @import("std");
 const zqlite = @import("zqlite");
 
-const fmt = @import("fmt.zig");
-const mem = @import("mem.zig");
-const meta = @import("meta.zig");
+const utils = @import("utils");
 
 pub const Options = struct {
     log_scope: @TypeOf(.EnumLiteral) = .@"utils/zqlite",
@@ -12,11 +10,11 @@ pub const Options = struct {
 
     fn logErrDefault(err: anyerror, conn: zqlite.Conn, args: anytype) void {
         const sql: []const u8 = args.@"0";
-        log.err("{s}: {s}. Statement: {s}", .{ @errorName(err), conn.lastError(), fmt.fmtOneline(sql) });
+        log.err("{s}: {s}. Statement: {s}", .{ @errorName(err), conn.lastError(), utils.fmt.fmtOneline(sql) });
     }
 };
 
-pub const options: Options = if (@hasDecl(root, "utils_zqlite_options")) root.utils_zqlite_options else .{};
+pub const options: Options = if (@hasDecl(root, "zqlite_typed_options")) root.zqlite_typed_options else .{};
 
 pub const log = std.log.scoped(options.log_scope);
 
@@ -39,9 +37,9 @@ pub fn MergedTables(
     comptime B: type,
 ) type {
     const mapFn = struct {
-        fn mapFn(comptime table: []const u8, comptime T: type) fn (meta.FieldInfo(T)) meta.FieldInfo(T) {
+        fn mapFn(comptime table: []const u8, comptime T: type) fn (utils.meta.FieldInfo(T)) utils.meta.FieldInfo(T) {
             return struct {
-                fn map(field: meta.FieldInfo(T)) meta.FieldInfo(T) {
+                fn map(field: utils.meta.FieldInfo(T)) utils.meta.FieldInfo(T) {
                     var f = field;
                     f.name = table ++ "." ++ f.name;
                     return f;
@@ -50,9 +48,9 @@ pub fn MergedTables(
         }
     }.mapFn;
 
-    return meta.MergedStructs(
-        if (a_qualification) |qualification| meta.MapFields(A, mapFn(qualification, A)) else A,
-        if (b_qualification) |qualification| meta.MapFields(B, mapFn(qualification, B)) else B,
+    return utils.meta.MergedStructs(
+        if (a_qualification) |qualification| utils.meta.MapFields(A, mapFn(qualification, A)) else A,
+        if (b_qualification) |qualification| utils.meta.MapFields(B, mapFn(qualification, B)) else B,
     );
 }
 
@@ -301,7 +299,7 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
         \\) VALUES (
     ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
         \\)
-    , meta.FieldsTuple(Column));
+    , utils.meta.FieldsTuple(Column));
 }
 
 pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []const u8 {
@@ -310,7 +308,7 @@ pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []cons
         select.* = "\"" ++ @tagName(column) ++ "\"";
         if (table) |t| select.* = "\"" ++ t ++ "\"." ++ select.*;
     }
-    return comptime mem.comptimeJoin(&selects, ", ");
+    return comptime utils.mem.comptimeJoin(&selects, ", ");
 }
 
 test columnList {
