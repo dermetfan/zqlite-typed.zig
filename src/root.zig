@@ -10,7 +10,7 @@ pub const Options = struct {
 
     fn logErrDefault(err: anyerror, conn: zqlite.Conn, args: anytype) void {
         const sql: []const u8 = args.@"0";
-        log.err("{s}: {s}. Statement: {s}", .{ @errorName(err), conn.lastError(), utils.fmt.fmtOneline(sql) });
+        log.err("{s}: {s}. Statement: {f}", .{ @errorName(err), conn.lastError(), utils.fmt.fmtOneline(sql) });
     }
 };
 
@@ -18,7 +18,7 @@ pub const options: Options = if (@hasDecl(root, "zqlite_typed_options")) root.zq
 
 pub const log = std.log.scoped(options.log_scope);
 
-pub fn logErr(conn: zqlite.Conn, comptime func_name: std.meta.DeclEnum(zqlite.Conn), args: anytype) zqlite.Error!(blk: {
+pub fn logErr(conn: zqlite.Conn, comptime func_name: std.meta.DeclEnum(zqlite.Conn), args: anytype) (zqlite.Error || error{MultipleStatements})!(blk: {
     const func = @field(zqlite.Conn, @tagName(func_name));
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
     break :blk @typeInfo(func_info.return_type.?).error_union.payload;
@@ -48,10 +48,10 @@ pub fn MergedTables(
         }
     }.mapFn;
 
-    return utils.meta.MergedStructs(
+    return utils.meta.MergedStructs(&[_]type{
         if (a_qualification) |qualification| utils.meta.MapFields(A, mapFn(qualification, A)) else A,
         if (b_qualification) |qualification| utils.meta.MapFields(B, mapFn(qualification, B)) else B,
-    );
+    });
 }
 
 test MergedTables {
@@ -125,13 +125,19 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
             };
         }
 
-        fn column(result: zqlite.Row, comptime col: Column) GetterResult(std.meta.FieldType(Row, col)) {
+        fn column(result: zqlite.Row, comptime col: Column) GetterResult(@FieldType(Row, @tagName(col))) {
             const info = std.meta.fieldInfo(Row, col);
             const index = std.meta.fieldIndex(Row, info.name).?;
             return getter(info.type)(result, index);
         }
 
-        pub usingnamespace if (multi) struct {
+        pub const rows = if (multi) MultiImpl.rows;
+        pub const Rows = if (multi) MultiImpl.Rows;
+        pub const row = if (!multi) SingleImpl.row;
+        pub const queryIterator = if (multi) MultiImpl.queryIterator;
+        pub const query = if (multi) MultiImpl.query else SingleImpl.query;
+
+        const MultiImpl = struct {
             fn rows(conn: zqlite.Conn, values: Values) !zqlite.Rows {
                 return logErr(conn, .rows, .{ sql, values });
             }
@@ -162,7 +168,7 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
                 pub fn toOwnedSlice(self: *@This()) ![]Row {
                     errdefer self.deinit();
 
-                    var typed_rows = std.ArrayListUnmanaged(Row){};
+                    var typed_rows = std.ArrayList(Row).empty;
                     errdefer {
                         for (typed_rows.items) |typed_row| freeStructFromRow(Row, self.allocator, typed_row);
                         typed_rows.deinit(self.allocator);
@@ -180,24 +186,26 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
                 }
             };
 
-            pub fn queryIterator(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !Rows {
+            pub fn queryIterator(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !@This().Rows {
                 return .{
-                    .zqlite_rows = try rows(conn, values),
+                    .zqlite_rows = try @This().rows(conn, values),
                     .allocator = allocator,
                 };
             }
 
             pub fn query(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) ![]Row {
-                var iter = try queryIterator(allocator, conn, values);
+                var iter = try @This().queryIterator(allocator, conn, values);
                 return iter.toOwnedSlice();
             }
-        } else struct {
+        };
+
+        const SingleImpl = struct {
             fn row(conn: zqlite.Conn, values: Values) !?zqlite.Row {
                 return logErr(conn, .row, .{ sql, values });
             }
 
             pub fn query(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !?Row {
-                const zqlite_row = try row(conn, values) orelse return null;
+                const zqlite_row = try @This().row(conn, values) orelse return null;
                 errdefer zqlite_row.deinit();
 
                 var typed_row: Row = undefined;
@@ -248,31 +256,35 @@ test Query {
     {
         const Row = struct {};
         const Q = Query("", false, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload), @typeInfo(?Row));
+        try std.testing.expectEqual(utils.meta.FnErrorUnionPayload(@TypeOf(Q.query)), ?Row);
     }
 
     {
         const Row = struct {};
         const Q = Query("", true, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(std.meta.Elem(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload)), @typeInfo(Row));
+        try std.testing.expectEqual(std.meta.Elem(utils.meta.FnErrorUnionPayload(@TypeOf(Q.query))), Row);
     }
 }
 
 pub fn Exec(comptime sql: []const u8, comptime Values_: type) type {
     const Q = Query(sql, false, struct {}, Values_);
 
+    const no_args = @typeInfo(Q.Values).@"struct".fields.len == 0;
+
     return struct {
         pub const Values = Q.Values;
 
-        pub usingnamespace if (@typeInfo(Values).@"struct".fields.len == 0) struct {
+        pub const execNoArgs = if (no_args) struct {
             pub fn execNoArgs(conn: zqlite.Conn) !void {
                 return logErr(conn, .execNoArgs, .{sql});
             }
-        } else struct {
+        }.execNoArgs;
+
+        pub const exec = if (!no_args) struct {
             pub fn exec(conn: zqlite.Conn, values: Values) !void {
                 return logErr(conn, .exec, .{ sql, values });
             }
-        };
+        }.exec;
     };
 }
 
@@ -373,7 +385,7 @@ pub fn structFromRow(
                 .optional => |optional| if (value) |v| try self.clone(optional.child, v) else null,
 
                 else => switch (T) {
-                    zqlite.Blob => .{ .value = try self.clone(std.meta.FieldType(T, .value), value) },
+                    zqlite.Blob => .{ .value = try self.clone(@FieldType(T, .value), value) },
                     else => value,
                 },
             };
