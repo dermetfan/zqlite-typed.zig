@@ -2,15 +2,15 @@
     .name = .zqlite_typed,
     .version = "0.0.0",
     .fingerprint = 0xa1924c286846ad95,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zqlite = .{
-            .url = "https://github.com/karlseguin/zqlite.zig/archive/d146898482a4c4bdcba487496f67a24afa12894d.tar.gz",
-            .hash = "zqlite-0.0.0-RWLaYxp7lQBh-o0STqzS1uZZb0tLTCGBDgzpG_dGjd2J",
+            .url = "git+https://github.com/karlseguin/zqlite.zig?ref=master#5ac4cabe95a6d7faa7baf0da8057a8e6e8a227a1",
+            .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
         },
         .utils = .{
-            .url = "https://github.com/dermetfan/utils.zig/archive/b8983e7f2ca47ca81e4e238e8997427d24205f21.tar.gz",
-            .hash = "utils-0.0.0-5JJlD6WbAgC5s1hRX_2uuIfC-kduMC_EPdji7AF-yfO_",
+            .url = "git+https://github.com/dermetfan/utils.zig?ref=master#35af26a2d63e71e13c6958006cf7cf19408f5584",
+            .hash = "utils-0.0.0-5JJlD5yyAgBruqeE0U9rMCP5SCAID_p76xnol_87zi8A",
         },
     },
     .paths = .{

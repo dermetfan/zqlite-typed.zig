@@ -9,7 +9,7 @@ pub fn build(b: *Build) !void {
         .optimize = b.standardOptimizeOption(.{}),
     };
 
-    const zqlite_typed_mod = b.addModule("zqlite-typed", .{
+    const mod = b.addModule("zqlite-typed", .{
         .root_source_file = b.path("src/root.zig"),
         .target = options.target,
         .optimize = options.optimize,
@@ -17,18 +17,18 @@ pub fn build(b: *Build) !void {
             .{ .name = "zqlite", .module = b.dependency("zqlite", options).module("zqlite") },
             .{ .name = "utils", .module = b.dependency("utils", options).module("utils") },
         },
+        .link_libc = true,
     });
+    mod.linkSystemLibrary("sqlite3", .{});
 
     const test_step = b.step("test", "Run unit tests");
     {
-        const zqlite_typed_mod_test = b.addTest(.{
-            .root_module = zqlite_typed_mod,
-            .link_libc = true,
+        const mod_test = b.addTest(.{
+            .root_module = mod,
         });
-        zqlite_typed_mod_test.linkSystemLibrary("sqlite3");
 
-        const run_zqlite_typed_mod_test = b.addRunArtifact(zqlite_typed_mod_test);
-        test_step.dependOn(&run_zqlite_typed_mod_test.step);
+        const run_mod_test = b.addRunArtifact(mod_test);
+        test_step.dependOn(&run_mod_test.step);
     }
 
     _ = utils.addCheckTls(b);
