@@ -314,6 +314,27 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
     , utils.meta.FieldsTuple(Column));
 }
 
+pub fn SimpleUpsert(comptime table: []const u8, comptime Column: type, update: bool) type {
+    return Exec(
+        \\INSERT INTO "
+    ++ table ++
+        \\" (
+    ++ columnList(null, std.enums.values(std.meta.FieldEnum(Column))) ++
+        \\) VALUES (
+    ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
+        \\)
+        \\ON CONFLICT DO
+    ++ " " ++ if (!update) "NOTHING" else "UPDATE SET\n" ++ set: {
+        const columns = std.meta.fieldNames(Column);
+        var sets: [columns.len][]const u8 = undefined;
+        inline for (columns, &sets) |column, *set| {
+            set.* = "\"" ++ column ++ "\" = excluded.\"" ++ column ++ "\"";
+        }
+        break :set utils.mem.comptimeJoin(&sets, ",\n");
+    }
+    , utils.meta.FieldsTuple(Column));
+}
+
 pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []const u8 {
     comptime var selects: [columns.len][]const u8 = undefined;
     inline for (columns, &selects) |column, *select| {
