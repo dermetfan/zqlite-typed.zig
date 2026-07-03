@@ -87,8 +87,9 @@ test MergedTables {
     }
 }
 
-pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type, comptime Values_: type) type {
+pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type, comptime Values_: type) type {
     return struct {
+        pub const Row = Row_;
         pub const Column = std.meta.FieldEnum(Row);
         pub const Values = Values_;
 
