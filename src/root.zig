@@ -143,7 +143,6 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type
 
             pub const Rows = struct {
                 zqlite_rows: zqlite.Rows,
-                allocator: std.mem.Allocator,
 
                 pub fn deinit(self: @This()) void {
                     self.zqlite_rows.deinit();
@@ -153,10 +152,11 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type
                     try self.zqlite_rows.deinitErr();
                 }
 
-                pub fn next(self: *@This()) !?Row {
+                /// Free the returned row using `freeStructFromRow()`.
+                pub fn next(self: *@This(), allocator: std.mem.Allocator) !?Row {
                     if (self.zqlite_rows.next()) |zqlite_row| {
                         var typed_row: Row = undefined;
-                        try structFromRow(self.allocator, &typed_row, zqlite_row, column);
+                        try structFromRow(allocator, &typed_row, zqlite_row, column);
 
                         return typed_row;
                     }
@@ -164,37 +164,37 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type
                 }
 
                 /// Consumes this so `deinit()` or `deinitErr()` no longer have to be called.
-                pub fn toOwnedSlice(self: *@This()) ![]Row {
+                /// Elements in the returned slice need to be freed using `freeStructFromRow()`.
+                pub fn toOwnedSlice(self: *@This(), allocator: std.mem.Allocator) ![]Row {
                     errdefer self.deinit();
 
                     var typed_rows = std.ArrayList(Row).empty;
                     errdefer {
-                        for (typed_rows.items) |typed_row| freeStructFromRow(Row, self.allocator, typed_row);
-                        typed_rows.deinit(self.allocator);
+                        for (typed_rows.items) |typed_row| freeStructFromRow(Row, allocator, typed_row);
+                        typed_rows.deinit(allocator);
                     }
 
-                    while (try self.next()) |typed_row|
-                        (typed_rows.addOne(self.allocator) catch |err| {
-                            freeStructFromRow(Row, self.allocator, typed_row);
+                    while (try self.next(allocator)) |typed_row|
+                        (typed_rows.addOne(allocator) catch |err| {
+                            freeStructFromRow(Row, allocator, typed_row);
                             return err;
                         }).* = typed_row;
 
                     try self.deinitErr();
 
-                    return typed_rows.toOwnedSlice(self.allocator);
+                    return typed_rows.toOwnedSlice(allocator);
                 }
             };
 
-            pub fn queryIterator(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !@This().Rows {
+            pub fn queryIterator(conn: zqlite.Conn, values: Values) !@This().Rows {
                 return .{
                     .zqlite_rows = try @This().rows(conn, values),
-                    .allocator = allocator,
                 };
             }
 
             pub fn query(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) ![]Row {
-                var iter = try @This().queryIterator(allocator, conn, values);
-                return iter.toOwnedSlice();
+                var iter = try @This().queryIterator(conn, values);
+                return iter.toOwnedSlice(allocator);
             }
         };
 
