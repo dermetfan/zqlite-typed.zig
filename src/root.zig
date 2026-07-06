@@ -93,43 +93,16 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type
         pub const Column = std.meta.FieldEnum(Row);
         pub const Values = Values_;
 
-        fn GetterResult(comptime Result: type) type {
-            return switch (Result) {
-                zqlite.Blob => []const u8,
-                ?zqlite.Blob => ?[]const u8,
-                else => Result,
-            };
-        }
-
-        fn getter(comptime Result: type) fn (zqlite.Row, usize) GetterResult(Result) {
-            return switch (Result) {
-                bool => zqlite.Row.boolean,
-                ?bool => zqlite.Row.nullableBoolean,
-
-                i64 => zqlite.Row.int,
-                ?i64 => zqlite.Row.nullableInt,
-
-                f64 => zqlite.Row.float,
-                ?f64 => zqlite.Row.nullableFloat,
-
-                []const u8 => zqlite.Row.text,
-                ?[]const u8 => zqlite.Row.nullableText,
-
-                [*:0]const u8 => zqlite.Row.textZ,
-                ?[*:0]const u8 => zqlite.Row.nullableTextZ,
-                usize => zqlite.Row.columnBytes,
-
-                zqlite.Blob => zqlite.Row.blob,
-                ?zqlite.Blob => zqlite.Row.nullableBlob,
-
-                else => @compileError("There is no zqlite getter for type '" ++ @typeName(Result) ++ "'"),
-            };
-        }
-
-        fn column(result: zqlite.Row, comptime col: Column) GetterResult(@FieldType(Row, @tagName(col))) {
+        fn column(result: zqlite.Row, comptime col: Column) GetResult: {
+            const Col = @FieldType(Row, @tagName(col));
+            break :GetResult @TypeOf(result.get(
+                Col,
+                0, // does not matter here as we don't actually call the function
+            ));
+        } {
             const info = std.meta.fieldInfo(Row, col);
             const index = std.meta.fieldIndex(Row, info.name).?;
-            return getter(info.type)(result, index);
+            return result.get(info.type, index);
         }
 
         pub const Rows = if (multi) MultiImpl.Rows;
@@ -230,11 +203,10 @@ test Query {
             f: ?f64,
             g: []const u8,
             h: ?[]const u8,
-            i: [*:0]const u8,
-            j: ?[*:0]const u8,
-            k: usize,
-            l: zqlite.Blob,
-            m: ?zqlite.Blob,
+            i: [:0]const u8,
+            j: ?[:0]const u8,
+            k: zqlite.Blob,
+            l: ?zqlite.Blob,
         }, struct {});
 
         try std.testing.expectEqual(bool, @TypeOf(Q.column(undefined, .a)));
@@ -245,11 +217,10 @@ test Query {
         try std.testing.expectEqual(?f64, @TypeOf(Q.column(undefined, .f)));
         try std.testing.expectEqual([]const u8, @TypeOf(Q.column(undefined, .g)));
         try std.testing.expectEqual(?[]const u8, @TypeOf(Q.column(undefined, .h)));
-        try std.testing.expectEqual([*:0]const u8, @TypeOf(Q.column(undefined, .i)));
-        try std.testing.expectEqual(?[*:0]const u8, @TypeOf(Q.column(undefined, .j)));
-        try std.testing.expectEqual(usize, @TypeOf(Q.column(undefined, .k)));
-        try std.testing.expectEqual([]const u8, @TypeOf(Q.column(undefined, .l)));
-        try std.testing.expectEqual(?[]const u8, @TypeOf(Q.column(undefined, .m)));
+        try std.testing.expectEqual([:0]const u8, @TypeOf(Q.column(undefined, .i)));
+        try std.testing.expectEqual(?[:0]const u8, @TypeOf(Q.column(undefined, .j)));
+        try std.testing.expectEqual([]const u8, @TypeOf(Q.column(undefined, .k)));
+        try std.testing.expectEqual(?[]const u8, @TypeOf(Q.column(undefined, .l)));
     }
 
     {
