@@ -301,7 +301,7 @@ test Exec {
     }
 }
 
-pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
+pub fn SimpleInsert(table: []const u8, Column: type) type {
     return Exec(
         \\INSERT INTO "
     ++ table ++
@@ -313,7 +313,7 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
     , utils.meta.FieldsTuple(Column));
 }
 
-pub fn SimpleUpsert(comptime table: []const u8, comptime Column: type, update: bool) type {
+pub fn SimpleUpsert(table: []const u8, Column: type, update: bool) type {
     return Exec(
         \\INSERT INTO "
     ++ table ++
