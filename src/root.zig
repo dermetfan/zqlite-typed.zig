@@ -1,8 +1,10 @@
-const root = @import("root");
 const std = @import("std");
-const zqlite = @import("zqlite");
+const root = @import("root");
 
 const utils = @import("utils");
+const zqlite = @import("zqlite");
+
+pub const fmt = @import("fmt.zig");
 
 pub const Options = struct {
     log_scope: @TypeOf(.EnumLiteral) = .@"utils/zqlite",
@@ -87,11 +89,13 @@ test MergedTables {
     }
 }
 
-pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row_: type, comptime Values_: type) type {
+pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: type, comptime Values_: type) type {
     return struct {
         pub const Row = Row_;
         pub const Column = std.meta.FieldEnum(Row);
         pub const Values = Values_;
+
+        pub const sql = sql_;
 
         fn column(result: zqlite.Row, comptime col: Column) GetResult: {
             const Col = @FieldType(Row, @tagName(col));
@@ -236,13 +240,15 @@ test Query {
     }
 }
 
-pub fn Exec(comptime sql: []const u8, comptime Values_: type) type {
-    const Q = Query(sql, false, struct {}, Values_);
+pub fn Exec(comptime sql_: []const u8, comptime Values_: type) type {
+    const Q = Query(sql_, false, struct {}, Values_);
 
     const no_args = @typeInfo(Q.Values).@"struct".fields.len == 0;
 
     return struct {
+        pub const Column = Q.Column;
         pub const Values = Q.Values;
+        pub const sql = Q.sql;
 
         pub const execNoArgs = if (no_args) struct {
             pub fn execNoArgs(conn: zqlite.Conn) !void {
@@ -274,57 +280,64 @@ test Exec {
 
 pub fn SimpleInsert(table: []const u8, Column: type) type {
     return Exec(
-        \\INSERT INTO "
-    ++ table ++
-        \\" (
-    ++ columnList(null, std.enums.values(std.meta.FieldEnum(Column))) ++
-        \\) VALUES (
-    ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
-        \\)
-    , utils.meta.FieldsTuple(Column));
+        std.fmt.comptimePrint(
+            \\INSERT INTO {f} ({f})
+            \\VALUES (
+        ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
+            \\)
+        , .{
+            fmt.fmtIdentifier(table),
+            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
+        }),
+        utils.meta.FieldsTuple(Column),
+    );
+}
+
+test SimpleInsert {
+    try std.testing.expectEqualStrings(
+        \\INSERT INTO "table" ("foo", "bar")
+        \\VALUES (?, ?)
+    , SimpleInsert("table", struct { foo: void, bar: void }).sql);
 }
 
 pub fn SimpleUpsert(table: []const u8, Column: type, update: bool) type {
     return Exec(
-        \\INSERT INTO "
-    ++ table ++
-        \\" (
-    ++ columnList(null, std.enums.values(std.meta.FieldEnum(Column))) ++
-        \\) VALUES (
-    ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
-        \\)
-        \\ON CONFLICT DO
-    ++ " " ++ if (!update) "NOTHING" else "UPDATE SET\n" ++ set: {
-        const columns = std.meta.fieldNames(Column);
-        var sets: [columns.len][]const u8 = undefined;
-        inline for (columns, &sets) |column, *set| {
-            set.* = "\"" ++ column ++ "\" = excluded.\"" ++ column ++ "\"";
-        }
-        break :set utils.mem.comptimeJoin(&sets, ",\n");
-    }
-    , utils.meta.FieldsTuple(Column));
+        std.fmt.comptimePrint(
+            \\INSERT INTO {f} ({f})
+            \\VALUES (
+        ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
+            \\)
+            \\ON CONFLICT DO
+        ++ " " ++ if (!update) "NOTHING" else "UPDATE SET\n" ++ set: {
+            const columns = std.meta.fieldNames(Column);
+            var sets: [columns.len][]const u8 = undefined;
+            for (columns, &sets) |column, *set|
+                set.* = std.fmt.comptimePrint("{f} = excluded.{f}", .{
+                    fmt.fmtIdentifier(column),
+                    fmt.fmtIdentifier(column),
+                });
+            break :set utils.mem.comptimeJoin(&sets, ",\n");
+        }, .{
+            fmt.fmtIdentifier(table),
+            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
+        }),
+        utils.meta.FieldsTuple(Column),
+    );
 }
 
-pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []const u8 {
-    comptime var selects: [columns.len][]const u8 = undefined;
-    inline for (columns, &selects) |column, *select| {
-        select.* = "\"" ++ @tagName(column) ++ "\"";
-        if (table) |t| select.* = "\"" ++ t ++ "\"." ++ select.*;
-    }
-    return comptime utils.mem.comptimeJoin(&selects, ", ");
-}
-
-test columnList {
+test SimpleUpsert {
     try std.testing.expectEqualStrings(
-        \\"foo", "bar", "baz"
-    , columnList(null, .{ .foo, .bar, .baz }));
-
-    {
-        const expected =
-            \\"a"."foo", "a"."bar", "a"."baz"
-        ;
-        try std.testing.expectEqualStrings(expected, columnList("a", .{ .foo, .bar, .baz }));
-    }
+        \\INSERT INTO "table" ("foo", "bar")
+        \\VALUES (?, ?)
+        \\ON CONFLICT DO NOTHING
+    , SimpleUpsert("table", struct { foo: void, bar: void }, false).sql);
+    try std.testing.expectEqualStrings(
+        \\INSERT INTO "table" ("foo", "bar")
+        \\VALUES (?, ?)
+        \\ON CONFLICT DO UPDATE SET
+        \\"foo" = excluded."foo",
+        \\"bar" = excluded."bar"
+    , SimpleUpsert("table", struct { foo: void, bar: void }, true).sql);
 }
 
 pub fn structFromRow(
@@ -424,4 +437,8 @@ pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: 
 
         free(allocator, field_value);
     }
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
