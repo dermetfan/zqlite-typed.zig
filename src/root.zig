@@ -340,6 +340,31 @@ test SimpleUpsert {
     , SimpleUpsert("table", struct { foo: void, bar: void }, true).sql);
 }
 
+pub fn SimpleDelete(table: []const u8, Values: type) type {
+    const values = std.meta.fieldNames(Values);
+    var value_alts: [values.len]@typeInfo(@TypeOf(fmt.fmtIdentifier)).@"fn".return_type.? = undefined;
+    for (&value_alts, values) |*value_alt, value|
+        value_alt.* = fmt.fmtIdentifier(value);
+
+    return Exec(
+        std.fmt.comptimePrint(
+            \\DELETE FROM {f}
+            \\WHERE {f}
+        , .{
+            fmt.fmtIdentifier(table),
+            utils.fmt.fmtJoinSepStr(std.meta.Elem(@TypeOf(value_alts)), "{f} = ?", &value_alts, " AND "),
+        }),
+        utils.meta.FieldsTuple(Values),
+    );
+}
+
+test SimpleDelete {
+    try std.testing.expectEqualStrings(
+        \\DELETE FROM "table"
+        \\WHERE "foo" = ? AND "bar" = ?
+    , SimpleDelete("table", struct { foo: void, bar: void }).sql);
+}
+
 pub fn structFromRow(
     allocator: std.mem.Allocator,
     target_ptr: anytype,
