@@ -278,6 +278,41 @@ test Exec {
     }
 }
 
+pub fn SimpleSelectBy(
+    table: []const u8,
+    Column: type,
+    columns: std.enums.EnumSet(std.meta.FieldEnum(Column)),
+    where_equal: std.enums.EnumSet(std.meta.FieldEnum(Column)),
+) type {
+    var where_alts: [where_equal.count()]@typeInfo(@TypeOf(fmt.fmtIdentifier)).@"fn".return_type.? = undefined;
+    var where_equal_iter = where_equal.iterator();
+    for (&where_alts) |*where_alt|
+        where_alt.* = fmt.fmtIdentifier(@tagName(where_equal_iter.next().?));
+
+    return Query(
+        std.fmt.comptimePrint(
+            \\SELECT {f}
+            \\FROM {f}
+            \\WHERE {f}
+        , .{
+            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, columns, .space),
+            fmt.fmtIdentifier(table),
+            utils.fmt.fmtJoinSepStr(std.meta.Elem(@TypeOf(where_alts)), "{f} = ?", &where_alts, " AND "),
+        }),
+        false,
+        utils.meta.SubStruct(Column, columns),
+        utils.meta.FieldsTuple(utils.meta.SubStruct(Column, where_equal)),
+    );
+}
+
+test SimpleSelectBy {
+    try std.testing.expectEqualStrings(
+        \\SELECT "foo", "bar"
+        \\FROM "table"
+        \\WHERE "foo" = ? AND "bar" = ?
+    , SimpleSelectBy("table", struct { foo: void, bar: void }, .full, .full).sql);
+}
+
 pub fn SimpleInsert(table: []const u8, Column: type) type {
     return Exec(
         std.fmt.comptimePrint(
