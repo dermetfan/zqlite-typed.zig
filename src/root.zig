@@ -32,63 +32,6 @@ pub fn logErr(conn: zqlite.Conn, comptime func_name: std.meta.DeclEnum(zqlite.Co
     };
 }
 
-pub fn MergedTables(
-    comptime a_qualification: ?[]const u8,
-    comptime A: type,
-    comptime b_qualification: ?[]const u8,
-    comptime B: type,
-) type {
-    const mapFn = struct {
-        fn mapFn(comptime table: []const u8, comptime T: type) fn (utils.meta.FieldInfo(T)) utils.meta.FieldInfo(T) {
-            return struct {
-                fn map(field: utils.meta.FieldInfo(T)) utils.meta.FieldInfo(T) {
-                    var f = field;
-                    f.name = table ++ "." ++ f.name;
-                    return f;
-                }
-            }.map;
-        }
-    }.mapFn;
-
-    return utils.meta.MergedStructs(&[_]type{
-        if (a_qualification) |qualification| utils.meta.MapFields(A, mapFn(qualification, A)) else A,
-        if (b_qualification) |qualification| utils.meta.MapFields(B, mapFn(qualification, B)) else B,
-    });
-}
-
-test MergedTables {
-    const TableA = struct {
-        foo: []const u8,
-        bar: zqlite.Blob,
-    };
-    const TableB = struct {
-        foo: []const u8,
-        baz: zqlite.Blob,
-    };
-
-    {
-        const TableMerged = MergedTables("a", TableA, "b", TableB);
-        const column_names = std.meta.tags(std.meta.FieldEnum(TableMerged));
-
-        try std.testing.expectEqual(4, column_names.len);
-        try std.testing.expectEqual(.@"a.foo", column_names[0]);
-        try std.testing.expectEqual(.@"a.bar", column_names[1]);
-        try std.testing.expectEqual(.@"b.foo", column_names[2]);
-        try std.testing.expectEqual(.@"b.baz", column_names[3]);
-    }
-
-    {
-        const TableMerged = MergedTables(null, TableA, "b", TableB);
-        const column_names = std.meta.tags(std.meta.FieldEnum(TableMerged));
-
-        try std.testing.expectEqual(4, column_names.len);
-        try std.testing.expectEqual(.foo, column_names[0]);
-        try std.testing.expectEqual(.bar, column_names[1]);
-        try std.testing.expectEqual(.@"b.foo", column_names[2]);
-        try std.testing.expectEqual(.@"b.baz", column_names[3]);
-    }
-}
-
 pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: type, comptime Values_: type) type {
     return struct {
         pub const Row = Row_;
