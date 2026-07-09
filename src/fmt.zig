@@ -27,15 +27,46 @@ test fmtIdentifier {
     , "{f}", .{fmtIdentifier("")});
 }
 
+fn formatString(string: []const u8, writer: *std.Io.Writer) !void {
+    try writer.writeByte('\'');
+    for (string) |char| try switch (char) {
+        '\'' => |quote| writer.writeAll(&.{ quote, quote }),
+        else => writer.writeByte(char),
+    };
+    try writer.writeByte('\'');
+}
+
+pub fn fmtString(string: []const u8) std.fmt.Alt([]const u8, formatString) {
+    return .{ .data = string };
+}
+
+test fmtString {
+    try std.testing.expectFmt(
+        \\'foo'
+    , "{f}", .{fmtString("foo")});
+    try std.testing.expectFmt(
+        \\'fo''o'
+    , "{f}", .{fmtString("fo'o")});
+    try std.testing.expectFmt(
+        \\''
+    , "{f}", .{fmtString("")});
+}
+
 pub const Pretty = enum {
     minimal,
     space,
     newline,
 };
 
-fn FormatEnumSetData(comptime E: type) type {
+fn FormatEnumSet(E: type, literal: enum { identifier, string }) type {
     return struct {
-        qualifier: ?[]const u8 = null,
+        qualifier: switch (literal) {
+            .identifier => ?[]const u8,
+            .string => void,
+        } = switch (literal) {
+            .identifier => null,
+            .string => {},
+        },
         enum_set: std.enums.EnumSet(E),
         pretty: Pretty = .space,
 
@@ -54,15 +85,20 @@ fn FormatEnumSetData(comptime E: type) type {
                     }
                 }
 
-                if (self.qualifier) |qualifier|
-                    try writer.print("{f}.", .{fmtIdentifier(qualifier)});
-                try formatIdentifier(@tagName(e), writer);
+                switch (literal) {
+                    .identifier => {
+                        if (self.qualifier) |qualifier|
+                            try writer.print("{f}.", .{fmtIdentifier(qualifier)});
+                        try formatIdentifier(@tagName(e), writer);
+                    },
+                    .string => try formatString(@tagName(e), writer),
+                }
             }
         }
     };
 }
 
-pub fn fmtEnumSet(comptime E: type, qualifier: ?[]const u8, enum_set: std.enums.EnumSet(E), pretty: Pretty) FormatEnumSetData(E) {
+pub fn fmtIdentifierEnumSet(comptime E: type, qualifier: ?[]const u8, enum_set: std.enums.EnumSet(E), pretty: Pretty) FormatEnumSet(E, .identifier) {
     return .{
         .qualifier = qualifier,
         .enum_set = enum_set,
@@ -70,33 +106,60 @@ pub fn fmtEnumSet(comptime E: type, qualifier: ?[]const u8, enum_set: std.enums.
     };
 }
 
-test fmtEnumSet {
+test fmtIdentifierEnumSet {
     const E = enum { foo, bar };
 
     try std.testing.expectFmt(
         \\"foo","bar"
-    , "{f}", .{fmtEnumSet(E, null, .full, .minimal)});
+    , "{f}", .{fmtIdentifierEnumSet(E, null, .full, .minimal)});
     try std.testing.expectFmt(
         \\"foo", "bar"
-    , "{f}", .{fmtEnumSet(E, null, .full, .space)});
+    , "{f}", .{fmtIdentifierEnumSet(E, null, .full, .space)});
     try std.testing.expectFmt(
         \\"foo",
         \\"bar"
-    , "{f}", .{fmtEnumSet(E, null, .full, .newline)});
+    , "{f}", .{fmtIdentifierEnumSet(E, null, .full, .newline)});
 
     try std.testing.expectFmt(
         \\"q"."foo","q"."bar"
-    , "{f}", .{fmtEnumSet(E, "q", .full, .minimal)});
+    , "{f}", .{fmtIdentifierEnumSet(E, "q", .full, .minimal)});
     try std.testing.expectFmt(
         \\"q"."foo", "q"."bar"
-    , "{f}", .{fmtEnumSet(E, "q", .full, .space)});
+    , "{f}", .{fmtIdentifierEnumSet(E, "q", .full, .space)});
     try std.testing.expectFmt(
         \\"q"."foo",
         \\"q"."bar"
-    , "{f}", .{fmtEnumSet(E, "q", .full, .newline)});
+    , "{f}", .{fmtIdentifierEnumSet(E, "q", .full, .newline)});
 
     for (std.enums.values(Pretty)) |pretty| {
-        try std.testing.expectFmt("", "{f}", .{fmtEnumSet(E, null, .empty, pretty)});
-        try std.testing.expectFmt("", "{f}", .{fmtEnumSet(E, "q", .empty, pretty)});
+        try std.testing.expectFmt("", "{f}", .{fmtIdentifierEnumSet(E, null, .empty, pretty)});
+        try std.testing.expectFmt("", "{f}", .{fmtIdentifierEnumSet(E, "q", .empty, pretty)});
+    }
+}
+
+pub fn fmtStringEnumSet(comptime E: type, enum_set: std.enums.EnumSet(E), pretty: Pretty) FormatEnumSet(E, .string) {
+    return .{
+        .enum_set = enum_set,
+        .pretty = pretty,
+    };
+}
+
+test fmtStringEnumSet {
+    const E = enum { foo, bar };
+
+    try std.testing.expectFmt(
+        \\'foo','bar'
+    , "{f}", .{fmtStringEnumSet(E, .full, .minimal)});
+    try std.testing.expectFmt(
+        \\'foo', 'bar'
+    , "{f}", .{fmtStringEnumSet(E, .full, .space)});
+    try std.testing.expectFmt(
+        \\'foo',
+        \\'bar'
+    , "{f}", .{fmtStringEnumSet(E, .full, .newline)});
+
+    for (std.enums.values(Pretty)) |pretty| {
+        try std.testing.expectFmt("", "{f}", .{fmtStringEnumSet(E, .empty, pretty)});
+        try std.testing.expectFmt("", "{f}", .{fmtStringEnumSet(E, .empty, pretty)});
     }
 }

@@ -295,7 +295,7 @@ pub fn SimpleSelectBy(
             \\FROM {f}
             \\WHERE {f}
         , .{
-            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, columns, .space),
+            fmt.fmtIdentifierEnumSet(std.meta.FieldEnum(Column), null, columns, .space),
             fmt.fmtIdentifier(table),
             utils.fmt.fmtJoinSepStr(std.meta.Elem(@TypeOf(where_alts)), "{f} = ?", &where_alts, " AND "),
         }),
@@ -322,7 +322,7 @@ pub fn SimpleInsert(table: []const u8, Column: type) type {
             \\)
         , .{
             fmt.fmtIdentifier(table),
-            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
+            fmt.fmtIdentifierEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
         }),
         utils.meta.FieldsTuple(Column),
     );
@@ -354,7 +354,7 @@ pub fn SimpleUpsert(table: []const u8, Column: type, update: bool) type {
             break :set utils.mem.comptimeJoin(&sets, ",\n");
         }, .{
             fmt.fmtIdentifier(table),
-            fmt.fmtEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
+            fmt.fmtIdentifierEnumSet(std.meta.FieldEnum(Column), null, .full, .space),
         }),
         utils.meta.FieldsTuple(Column),
     );
