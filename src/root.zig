@@ -40,13 +40,14 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
 
         pub const sql = sql_;
 
-        fn column(result: zqlite.Row, comptime col: Column) @TypeOf(result.get(
-            @FieldType(Row, @tagName(col)),
+        fn column(row: zqlite.Row, comptime col: Column) @TypeOf(row.get(
+            columnInfo(@FieldType(Row, @tagName(col))).zqlite_type,
             0, // does not matter here as we don't actually call the function
         )) {
-            const info = std.meta.fieldInfo(Row, col);
-            const index = std.meta.fieldIndex(Row, info.name).?;
-            return result.get(info.type, index);
+            return row.get(
+                columnInfo(@FieldType(Row, @tagName(col))).zqlite_type,
+                std.meta.fieldIndex(Row, @tagName(col)).?,
+            );
         }
 
         pub const Rows = if (multi) MultiImpl.Rows;
@@ -71,12 +72,8 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
 
                 /// Free the returned row using `freeStructFromRow()`.
                 pub fn next(self: *@This(), allocator: std.mem.Allocator) !?Row {
-                    if (self.zqlite_rows.next()) |zqlite_row| {
-                        var typed_row: Row = undefined;
-                        try structFromRow(Row, allocator, &typed_row, zqlite_row, column);
-
-                        return typed_row;
-                    }
+                    if (self.zqlite_rows.next()) |zqlite_row|
+                        return try structFromRow(Row, allocator, zqlite_row, column);
                     return null;
                 }
 
@@ -124,8 +121,7 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
                 const zqlite_row = try @This().row(conn, values) orelse return null;
                 errdefer zqlite_row.deinit();
 
-                var typed_row: Row = undefined;
-                try structFromRow(Row, allocator, &typed_row, zqlite_row, column);
+                const typed_row = try structFromRow(Row, allocator, zqlite_row, column);
                 errdefer freeStructFromRow(Row, allocator, typed_row);
 
                 try zqlite_row.deinitErr();
@@ -340,99 +336,117 @@ test SimpleDelete {
     , SimpleDelete("table", struct { foo: void, bar: void }).sql);
 }
 
+fn columnInfo(comptime Column: type) struct {
+    zqlite_type: type,
+    has_from_zqlite: bool,
+    has_deinit: bool,
+} {
+    const is_struct = @typeInfo(Column) == .@"struct";
+    const has_from_zqlite = is_struct and @hasDecl(Column, "fromZqlite");
+    return .{
+        .has_from_zqlite = has_from_zqlite,
+        .has_deinit = is_struct and @hasDecl(Column, "deinit"),
+        .zqlite_type = if (has_from_zqlite)
+            @typeInfo(@TypeOf(Column.fromSqlite)).@"fn".params[1].type.?
+        else
+            Column,
+    };
+}
+
 pub fn structFromRow(
-    comptime Target: type,
+    comptime Row: type,
     allocator: std.mem.Allocator,
-    target: *Target,
-    row: zqlite.Row,
+    zqlite_row: zqlite.Row,
     column_fn: anytype,
-) !void {
-    const fields = comptime std.enums.values(std.meta.FieldEnum(Target));
+) !Row {
+    var row: Row = undefined;
 
-    var clone_ctx = struct {
-        allocator: std.mem.Allocator,
+    const columns = comptime std.enums.values(std.meta.FieldEnum(Row));
 
-        allocated_mem: [fields.len][]const u8 = undefined,
-        allocated: usize = 0,
-        allocated_mem_z: [fields.len][:0]const u8 = undefined,
-        allocated_z: usize = 0,
+    var columns_idx: usize = 0;
 
-        fn deinit(self: *@This()) void {
-            for (self.allocated_mem[0..self.allocated]) |slice| self.allocator.free(slice);
-            for (self.allocated_mem_z[0..self.allocated_z]) |slice_z| self.allocator.free(slice_z);
-        }
+    errdefer inline for (columns, 0..) |column, comptime_columns_idx| {
+        if (comptime_columns_idx == columns_idx) break;
 
-        fn clone(self: *@This(), comptime T: type, value: anytype) std.mem.Allocator.Error!T {
-            return switch (@typeInfo(T)) {
-                .pointer => |pointer| pointer: {
-                    const cloned = if (pointer.sentinel_ptr == null) blk: {
-                        const slice = try self.allocator.dupe(pointer.child, value);
-                        errdefer comptime unreachable;
-                        self.allocated_mem[self.allocated] = slice;
-                        self.allocated += 1;
-                        break :blk slice;
-                    } else blk: {
-                        const slice_z = try self.allocator.dupeSentinel(pointer.child, value, 0);
-                        errdefer comptime unreachable;
-                        self.allocated_mem_z[self.allocated_z] = slice_z;
-                        self.allocated_z += 1;
-                        break :blk slice_z;
-                    };
+        const Column = @FieldType(Row, @tagName(column));
+        const value = @field(row, @tagName(column));
 
-                    break :pointer switch (pointer.size) {
-                        .slice => cloned,
-                        .many => cloned.ptr,
-                        else => @compileError("unsupported pointer size"),
-                    };
-                },
+        if (columnInfo(Column).has_deinit)
+            value.deinit(allocator)
+        else
+            free(Column, allocator, value);
+    };
 
-                .optional => |optional| if (value) |v| try self.clone(optional.child, v) else null,
+    inline for (columns) |column| {
+        defer columns_idx += 1;
 
-                else => switch (T) {
-                    zqlite.Blob => .{ .value = try self.clone(@FieldType(T, .value), value) },
-                    else => value,
-                },
-            };
-        }
-    }{ .allocator = allocator };
-    errdefer clone_ctx.deinit();
+        const Column = @FieldType(Row, @tagName(column));
+        const column_info = columnInfo(Column);
+        const value = column_fn(zqlite_row, column);
 
-    inline for (fields) |field|
-        @field(target, @tagName(field)) = try clone_ctx.clone(
-            @FieldType(Target, @tagName(field)),
-            column_fn(row, field),
-        );
+        @field(row, @tagName(column)) = if (column_info.has_from_zqlite)
+            try Column.fromZqlite(allocator, value)
+        else
+            try clone(Column, allocator, value);
+    }
+
+    return row;
 }
 
 pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: Row) void {
-    const free = struct {
-        fn free(alloc: std.mem.Allocator, value: anytype) void {
-            const Value = @TypeOf(value);
+    inline for (@typeInfo(Row).@"struct".fields) |column| {
+        const value = @field(row, column.name);
 
-            switch (@typeInfo(Value)) {
-                .pointer => |pointer| alloc.free(switch (pointer.size) {
-                    .slice => value,
-                    .many => if (pointer.sentinel_ptr != null)
-                        std.mem.span(value)
-                    else
-                        @compileError("many-item pointers only supported with sentinel"),
-                    else => @compileError("unsupported pointer size"),
-                }),
+        if (columnInfo(column.type).has_deinit)
+            value.deinit(allocator)
+        else
+            free(column.type, allocator, value);
+    }
+}
 
-                .optional => if (value) |v| free(alloc, v),
+/// Only for types supported by zqlite.
+fn clone(comptime T: type, allocator: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!T {
+    return switch (@typeInfo(T)) {
+        .pointer => |pointer| pointer: {
+            const cloned = if (pointer.sentinel_ptr == null)
+                try allocator.dupe(pointer.child, value)
+            else
+                try allocator.dupeSentinel(pointer.child, value, 0);
 
-                else => switch (Value) {
-                    zqlite.Blob => alloc.free(value.value),
-                    else => {},
-                },
-            }
-        }
-    }.free;
+            break :pointer switch (pointer.size) {
+                .slice => cloned,
+                .many => cloned.ptr,
+                else => |size| @compileError("unsupported pointer size \"" ++ @tagName(size) ++ "\""),
+            };
+        },
 
-    inline for (@typeInfo(Row).@"struct".fields) |field| {
-        const field_value = @field(row, field.name);
+        .optional => |optional| if (value) |v| try clone(optional.child, allocator, v) else null,
 
-        free(allocator, field_value);
+        else => switch (T) {
+            zqlite.Blob => .{ .value = try clone(@FieldType(T, .value), allocator, value) },
+            else => value,
+        },
+    };
+}
+
+/// Only for types supported by zqlite.
+fn free(comptime T: type, allocator: std.mem.Allocator, value: T) void {
+    switch (@typeInfo(T)) {
+        .pointer => |pointer| allocator.free(switch (pointer.size) {
+            .slice => value,
+            .many => if (pointer.sentinel_ptr != null)
+                std.mem.span(value)
+            else
+                @compileError("many-item pointers only supported with sentinel"),
+            else => |size| @compileError("unsupported pointer size \"" ++ @tagName(size) ++ "\""),
+        }),
+
+        .optional => if (value) |v| free(@TypeOf(v), allocator, v),
+
+        else => switch (T) {
+            zqlite.Blob => allocator.free(value.value),
+            else => {},
+        },
     }
 }
 
