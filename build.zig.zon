@@ -9,8 +9,8 @@
             .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
         },
         .utils = .{
-            .url = "git+https://github.com/dermetfan/utils.zig#973a007fcd13977cbbac008007432e4d96aea9b5",
-            .hash = "utils-0.0.0-5JJlD2y-AgBlsms7fxAVo0-jnr2BVFX2G0d362OR4lQR",
+            .url = "git+https://github.com/dermetfan/utils.zig#199c213405b2c10160703e4ecacd58d6e15894c9",
+            .hash = "utils-0.0.0-5JJlD8W-AgC3k5nFDIgz_p8uaq9I4bNCrhiuAcD0qrfX",
         },
     },
     .paths = .{
