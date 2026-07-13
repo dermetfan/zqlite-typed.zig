@@ -395,14 +395,11 @@ pub fn structFromRow(
     }{ .allocator = allocator };
     errdefer clone_ctx.deinit();
 
-    inline for (fields) |field| {
-        const value = column_fn(row, field);
-
-        const target_field = &@field(target, @tagName(field));
-        const TargetField = @TypeOf(target_field.*);
-
-        target_field.* = try clone_ctx.clone(TargetField, value);
-    }
+    inline for (fields) |field|
+        @field(target, @tagName(field)) = try clone_ctx.clone(
+            @FieldType(Target, @tagName(field)),
+            column_fn(row, field),
+        );
 }
 
 pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: Row) void {
