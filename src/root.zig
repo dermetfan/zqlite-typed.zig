@@ -55,8 +55,14 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
         pub const query = if (multi) MultiImpl.query else SingleImpl.query;
 
         const MultiImpl = struct {
-            fn rows(conn: zqlite.Conn, values: Values) !zqlite.Rows {
-                return logErr(conn, .rows, .{ sql, values });
+            fn rows(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !zqlite.Rows {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+
+                return logErr(conn, .rows, .{
+                    sql,
+                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                });
             }
 
             pub const Rows = struct {
@@ -100,9 +106,9 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
                 }
             };
 
-            pub fn queryIterator(conn: zqlite.Conn, values: Values) !@This().Rows {
+            pub fn queryIterator(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !@This().Rows {
                 return .{
-                    .zqlite_rows = try @This().rows(conn, values),
+                    .zqlite_rows = try @This().rows(allocator, conn, values),
                 };
             }
 
@@ -113,12 +119,18 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
         };
 
         const SingleImpl = struct {
-            fn row(conn: zqlite.Conn, values: Values) !?zqlite.Row {
-                return logErr(conn, .row, .{ sql, values });
+            fn row(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !?zqlite.Row {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+
+                return logErr(conn, .row, .{
+                    sql,
+                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                });
             }
 
             pub fn query(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !?Row {
-                const zqlite_row = try @This().row(conn, values) orelse return null;
+                const zqlite_row = try @This().row(allocator, conn, values) orelse return null;
                 errdefer zqlite_row.deinit();
 
                 const typed_row = try structFromRow(Row, allocator, zqlite_row, column);
@@ -193,8 +205,14 @@ pub fn Exec(comptime sql_: []const u8, comptime Values_: type) type {
         }.execNoArgs;
 
         pub const exec = if (!no_args) struct {
-            pub fn exec(conn: zqlite.Conn, values: Values) !void {
-                return logErr(conn, .exec, .{ sql, values });
+            pub fn exec(allocator: std.mem.Allocator, conn: zqlite.Conn, values: Values) !void {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+
+                return logErr(conn, .exec, .{
+                    sql,
+                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                });
             }
         }.exec;
     };
@@ -338,19 +356,62 @@ test SimpleDelete {
 
 fn columnInfo(comptime Column: type) struct {
     zqlite_type: type,
+    has_to_zqlite: bool,
     has_from_zqlite: bool,
     has_deinit: bool,
 } {
     const is_struct = @typeInfo(Column) == .@"struct";
+
+    const has_to_zqlite = is_struct and @hasDecl(Column, "toZqlite");
     const has_from_zqlite = is_struct and @hasDecl(Column, "fromZqlite");
+
+    const to_zqlite_type = if (has_to_zqlite) utils.meta.FnErrorUnionPayload(@TypeOf(Column.toZqlite));
+    const from_zqlite_type = if (has_from_zqlite) @typeInfo(@TypeOf(Column.fromZqlite)).@"fn".params[1].type.?;
+
+    if (has_to_zqlite and has_from_zqlite and to_zqlite_type != from_zqlite_type)
+        @compileError("Mismatched zqlite types for " ++ @typeName(Column) ++ ".{to,from}Zqlite(): " ++ @typeName(to_zqlite_type) ++ " and " ++ @typeName(from_zqlite_type));
+
     return .{
+        .has_to_zqlite = has_to_zqlite,
         .has_from_zqlite = has_from_zqlite,
         .has_deinit = is_struct and @hasDecl(Column, "deinit"),
-        .zqlite_type = if (has_from_zqlite)
-            @typeInfo(@TypeOf(Column.fromSqlite)).@"fn".params[1].type.?
+        .zqlite_type = if (has_to_zqlite)
+            to_zqlite_type
+        else if (has_from_zqlite)
+            from_zqlite_type
         else
             Column,
     };
+}
+
+fn ZqliteValues(Values: type) type {
+    return utils.meta.MapFields(Values, struct {
+        fn map(field: std.builtin.Type.StructField) std.builtin.Type.StructField {
+            const column_info = columnInfo(field.type);
+            return if (column_info.has_to_zqlite)
+                .{
+                    .name = field.name,
+                    .type = column_info.zqlite_type,
+                    .default_value_ptr = null,
+                    .is_comptime = false,
+                    .alignment = null,
+                }
+            else
+                field;
+        }
+    }.map);
+}
+
+/// Calling `toZqlite()` is inherently leaky because we don't know if or how it allocates.
+/// We cannot simply `free()` the value it returns because it might be borrowed.
+fn toZqliteValuesLeaky(comptime Values: type, arena: std.mem.Allocator, values: Values) !ZqliteValues(Values) {
+    var zqlite_values: ZqliteValues(Values) = undefined;
+    inline for (std.meta.fields(Values)) |field|
+        @field(zqlite_values, field.name) = if (columnInfo(field.type).has_to_zqlite)
+            try @field(values, field.name).toZqlite(arena)
+        else
+            @field(values, field.name);
+    return zqlite_values;
 }
 
 pub fn structFromRow(
