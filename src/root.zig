@@ -367,11 +367,13 @@ pub fn structFromRow(
                 .pointer => |pointer| pointer: {
                     const cloned = if (pointer.sentinel_ptr == null) blk: {
                         const slice = try self.allocator.dupe(pointer.child, value);
+                        errdefer comptime unreachable;
                         self.allocated_mem[self.allocated] = slice;
                         self.allocated += 1;
                         break :blk slice;
                     } else blk: {
                         const slice_z = try self.allocator.dupeSentinel(pointer.child, value, 0);
+                        errdefer comptime unreachable;
                         self.allocated_mem_z[self.allocated_z] = slice_z;
                         self.allocated_z += 1;
                         break :blk slice_z;
