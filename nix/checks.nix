@@ -7,7 +7,7 @@
         ../src
       ];
 
-      zigDepsHash = "";
+      zigDepsHash = "sha256-T4fYRk5EjcbYUjxqYLiT67dBwolIv+6QJIkg2cAcDQg=";
 
       zigRelease = "ReleaseSafe";
 
