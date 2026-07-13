@@ -73,7 +73,7 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
                 pub fn next(self: *@This(), allocator: std.mem.Allocator) !?Row {
                     if (self.zqlite_rows.next()) |zqlite_row| {
                         var typed_row: Row = undefined;
-                        try structFromRow(allocator, &typed_row, zqlite_row, column);
+                        try structFromRow(Row, allocator, &typed_row, zqlite_row, column);
 
                         return typed_row;
                     }
@@ -125,7 +125,7 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
                 errdefer zqlite_row.deinit();
 
                 var typed_row: Row = undefined;
-                try structFromRow(allocator, &typed_row, zqlite_row, column);
+                try structFromRow(Row, allocator, &typed_row, zqlite_row, column);
                 errdefer freeStructFromRow(Row, allocator, typed_row);
 
                 try zqlite_row.deinitErr();
@@ -341,14 +341,12 @@ test SimpleDelete {
 }
 
 pub fn structFromRow(
+    comptime Target: type,
     allocator: std.mem.Allocator,
-    target_ptr: anytype,
+    target: *Target,
     row: zqlite.Row,
     column_fn: anytype,
 ) !void {
-    const Target = std.meta.Child(@TypeOf(target_ptr));
-    const target: *Target = @ptrCast(target_ptr);
-
     const fields = comptime std.enums.values(std.meta.FieldEnum(Target));
 
     var clone_ctx = struct {
