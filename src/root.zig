@@ -40,13 +40,10 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
 
         pub const sql = sql_;
 
-        fn column(result: zqlite.Row, comptime col: Column) GetResult: {
-            const Col = @FieldType(Row, @tagName(col));
-            break :GetResult @TypeOf(result.get(
-                Col,
-                0, // does not matter here as we don't actually call the function
-            ));
-        } {
+        fn column(result: zqlite.Row, comptime col: Column) @TypeOf(result.get(
+            @FieldType(Row, @tagName(col)),
+            0, // does not matter here as we don't actually call the function
+        )) {
             const info = std.meta.fieldInfo(Row, col);
             const index = std.meta.fieldIndex(Row, info.name).?;
             return result.get(info.type, index);
