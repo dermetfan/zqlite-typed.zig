@@ -355,25 +355,25 @@ test SimpleDelete {
 }
 
 fn columnInfo(comptime Column: type) struct {
-    zqlite_type: type,
-    has_to_zqlite: bool,
     has_from_zqlite: bool,
+    has_to_zqlite: bool,
     has_deinit: bool,
+    zqlite_type: type,
 } {
     const is_struct = @typeInfo(Column) == .@"struct";
 
-    const has_to_zqlite = is_struct and @hasDecl(Column, "toZqlite");
     const has_from_zqlite = is_struct and @hasDecl(Column, "fromZqlite");
+    const has_to_zqlite = is_struct and @hasDecl(Column, "toZqlite");
 
-    const to_zqlite_type = if (has_to_zqlite) utils.meta.FnErrorUnionPayload(@TypeOf(Column.toZqlite));
     const from_zqlite_type = if (has_from_zqlite) @typeInfo(@TypeOf(Column.fromZqlite)).@"fn".params[1].type.?;
+    const to_zqlite_type = if (has_to_zqlite) utils.meta.FnErrorUnionPayload(@TypeOf(Column.toZqlite));
 
-    if (has_to_zqlite and has_from_zqlite and to_zqlite_type != from_zqlite_type)
-        @compileError("Mismatched zqlite types for " ++ @typeName(Column) ++ ".{to,from}Zqlite(): " ++ @typeName(to_zqlite_type) ++ " and " ++ @typeName(from_zqlite_type));
+    if (has_from_zqlite and has_to_zqlite and from_zqlite_type != to_zqlite_type)
+        @compileError("Mismatched zqlite types for " ++ @typeName(Column) ++ ".{from,to}Zqlite(): " ++ @typeName(from_zqlite_type) ++ " and " ++ @typeName(to_zqlite_type));
 
     return .{
-        .has_to_zqlite = has_to_zqlite,
         .has_from_zqlite = has_from_zqlite,
+        .has_to_zqlite = has_to_zqlite,
         .has_deinit = is_struct and @hasDecl(Column, "deinit"),
         .zqlite_type = if (has_to_zqlite)
             to_zqlite_type
