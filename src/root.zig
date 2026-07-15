@@ -41,11 +41,11 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
         pub const sql = sql_;
 
         fn column(row: zqlite.Row, comptime col: Column) @TypeOf(row.get(
-            columnInfo(@FieldType(Row, @tagName(col))).zqlite_type,
+            column_handling(@FieldType(Row, @tagName(col))).zqlite_type,
             0, // does not matter here as we don't actually call the function
         )) {
             return row.get(
-                columnInfo(@FieldType(Row, @tagName(col))).zqlite_type,
+                column_handling(@FieldType(Row, @tagName(col))).zqlite_type,
                 std.meta.fieldIndex(Row, @tagName(col)).?,
             );
         }
@@ -61,7 +61,7 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
 
                 return logErr(conn, .rows, .{
                     sql,
-                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                    try toZqliteValuesLeaky(Values, &arena, values),
                 });
             }
 
@@ -125,7 +125,7 @@ pub fn Query(comptime sql_: []const u8, comptime multi: bool, comptime Row_: typ
 
                 return logErr(conn, .row, .{
                     sql,
-                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                    try toZqliteValuesLeaky(Values, &arena, values),
                 });
             }
 
@@ -211,7 +211,7 @@ pub fn Exec(comptime sql_: []const u8, comptime Values_: type) type {
 
                 return logErr(conn, .exec, .{
                     sql,
-                    try toZqliteValuesLeaky(Values, arena.allocator(), values),
+                    try toZqliteValuesLeaky(Values, &arena, values),
                 });
             }
         }.exec;
@@ -354,76 +354,124 @@ test SimpleDelete {
     , SimpleDelete("table", struct { foo: void, bar: void }).sql);
 }
 
-fn columnInfo(Column: type) struct {
-    /// Also implies a deinit() function.
-    has_from_zqlite: bool,
-    has_to_zqlite: bool,
-    zqlite_type: type,
-} {
-    const has_from_zqlite = std.meta.hasFn(Column, "fromZqlite");
-    const has_to_zqlite = std.meta.hasFn(Column, "toZqlite");
-    const has_deinit = std.meta.hasFn(Column, "deinit");
+fn column_handling(
+    /// The zqlite type or custom container type to handle.
+    T: type,
+) type {
+    switch (@typeInfo(T)) {
+        .optional => |optional| {
+            const child = column_handling(optional.child);
 
-    if (has_from_zqlite and !has_deinit)
-        @compileError(@typeName(Column) ++ ".fromZqlite() implies that a deinit() must exist");
+            const Z = ?child.zqlite_type;
 
-    const from_zqlite_type = if (has_from_zqlite) @typeInfo(@TypeOf(Column.fromZqlite)).@"fn".params[1].type.?;
-    const to_zqlite_type = if (has_to_zqlite) utils.meta.FnErrorUnionPayload(@TypeOf(Column.toZqlite));
+            return struct {
+                pub const is_native = child.is_native;
 
-    if (has_from_zqlite and has_to_zqlite and from_zqlite_type != to_zqlite_type)
-        @compileError("Mismatched zqlite types for " ++ @typeName(Column) ++ ".{from,to}Zqlite(): " ++ @typeName(from_zqlite_type) ++ " and " ++ @typeName(to_zqlite_type));
+                pub const zqlite_type = Z;
 
-    if (has_from_zqlite and @TypeOf(Column.fromZqlite) != fn (std.mem.Allocator) std.mem.Allocator.Error!from_zqlite_type)
-        @compileError(@typeName(Column) ++ ".fromZqlite() has unsupported signature");
+                pub fn fromZqlite(allocator: std.mem.Allocator, column: Z) !T {
+                    return if (column) |c| try child.fromZqlite(allocator, c) else null;
+                }
 
-    if (has_to_zqlite)
-        for ([_]type{
-            fn (Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
-            fn (*const Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
-            fn (*Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
-        }) |Fn| {
-            if (@TypeOf(Column.toZqlite) == Fn) break;
-        } else @compileError(@typeName(Column) ++ ".toZqlite() has unsupported signature");
+                pub fn toZqlite(allocator: std.mem.Allocator, column: T) !Z {
+                    return if (column) |c| try child.toZqlite(allocator, c) else null;
+                }
 
-    return .{
-        .has_from_zqlite = has_from_zqlite,
-        .has_to_zqlite = has_to_zqlite,
-        .zqlite_type = if (has_from_zqlite)
-            from_zqlite_type
-        else if (has_to_zqlite)
-            to_zqlite_type
-        else
-            Column,
-    };
+                pub fn deinit(allocator: std.mem.Allocator, column: T) void {
+                    if (column) |c| child.deinit(allocator, c);
+                }
+            };
+        },
+        else => {
+            const is_native_ = isZqliteType(T);
+
+            const has_from = std.meta.hasFn(T, "fromZqlite");
+            const has_to = std.meta.hasFn(T, "toZqlite");
+            const has_deinit = std.meta.hasFn(T, "deinit");
+
+            const From = if (has_from) @typeInfo(@TypeOf(T.fromZqlite)).@"fn".params[1].type.?;
+            const To = if (has_to) utils.meta.FnErrorUnionPayload(@TypeOf(T.toZqlite));
+
+            if (has_from and has_to and From != To)
+                @compileError("Mismatched native zqlite types for " ++ @typeName(T) ++ ".{from,to}Zqlite(): " ++ @typeName(From) ++ " and " ++ @typeName(To));
+
+            const Z =
+                if (is_native_)
+                    T
+                else if (has_from)
+                    From
+                else if (has_to)
+                    To
+                else
+                    @compileError(@typeName(T) ++ " is not a native zqlite type and has no {from,to}Zqlite() functions");
+
+            if (is_native_) std.debug.assert(T == Z);
+
+            return struct {
+                pub const is_native = is_native_;
+
+                /// T if it is a native zqlite type,
+                /// otherwise the native zqlite type it is mapped to.
+                pub const zqlite_type = Z;
+
+                pub fn fromZqlite(allocator: std.mem.Allocator, value: Z) !T {
+                    return try if (is_native)
+                        clone(Z, allocator, value)
+                    else
+                        T.fromZqlite(allocator, value);
+                }
+
+                pub fn toZqlite(allocator: std.mem.Allocator, column: T) !Z {
+                    return if (is_native)
+                        column
+                    else
+                        try T.toZqlite(column, allocator);
+                }
+
+                pub fn deinit(allocator: std.mem.Allocator, column: T) void {
+                    if (is_native)
+                        free(T, allocator, column)
+                    else if (has_deinit)
+                        column.deinit(allocator);
+                }
+            };
+        },
+    }
 }
 
 fn ZqliteValues(Values: type) type {
     return utils.meta.MapFields(Values, struct {
         fn map(field: std.builtin.Type.StructField) std.builtin.Type.StructField {
-            const column_info = columnInfo(field.type);
-            return if (column_info.has_to_zqlite)
+            const handling = column_handling(field.type);
+            return if (handling.is_native)
+                field
+            else
                 .{
                     .name = field.name,
-                    .type = column_info.zqlite_type,
+                    .type = handling.zqlite_type,
                     .default_value_ptr = null,
                     .is_comptime = false,
                     .alignment = null,
-                }
-            else
-                field;
+                };
         }
     }.map);
 }
 
-/// Calling `toZqlite()` is inherently leaky because we don't know if or how it allocates.
-/// We cannot simply `free()` the value it returns because it might be borrowed.
-fn toZqliteValuesLeaky(comptime Values: type, arena: std.mem.Allocator, values: Values) !ZqliteValues(Values) {
+/// Does not attempt to free any allocations it made in case of an error.
+/// Only the creator of the values passed in knows which of them need to be freed.
+/// Freeing them all could cause double frees, freeing none could be a leak.
+/// Therefore, it is only safe to use this function with an arena, hence it accepts no other allocators.
+// The only way to make this safe would be if this function took a usize pointer
+// that, on error, would be set to the index into the list of fields in the return type
+// up to which it sucessfully assigned a value, so that the caller can free only those values.
+// That's not worth doing for our use case.
+fn toZqliteValuesLeaky(comptime Values: type, arena: *std.heap.ArenaAllocator, values: Values) !ZqliteValues(Values) {
     var zqlite_values: ZqliteValues(Values) = undefined;
     inline for (std.meta.fields(Values)) |field|
-        @field(zqlite_values, field.name) = if (columnInfo(field.type).has_to_zqlite)
-            try @field(values, field.name).toZqlite(arena)
-        else
-            @field(values, field.name);
+        @field(zqlite_values, field.name) = try column_handling(field.type).toZqlite(
+            arena.allocator(),
+            @field(values, field.name),
+        );
     return zqlite_values;
 }
 
@@ -445,10 +493,7 @@ pub fn structFromRow(
         const Column = @FieldType(Row, @tagName(column));
         const value = @field(row, @tagName(column));
 
-        if (columnInfo(Column).has_from_zqlite)
-            value.deinit(allocator)
-        else
-            free(Column, allocator, value);
+        column_handling(Column).deinit(allocator, value);
     };
 
     inline for (columns) |column| {
@@ -457,28 +502,20 @@ pub fn structFromRow(
         const Column = @FieldType(Row, @tagName(column));
         const value = column_fn(zqlite_row, column);
 
-        @field(row, @tagName(column)) = if (columnInfo(Column).has_from_zqlite)
-            try Column.fromZqlite(allocator, value)
-        else
-            try clone(Column, allocator, value);
+        @field(row, @tagName(column)) = try column_handling(Column).fromZqlite(allocator, value);
     }
 
     return row;
 }
 
 pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: Row) void {
-    inline for (@typeInfo(Row).@"struct".fields) |column| {
-        const value = @field(row, column.name);
-
-        if (columnInfo(column.type).has_from_zqlite)
-            value.deinit(allocator)
-        else
-            free(column.type, allocator, value);
-    }
+    inline for (@typeInfo(Row).@"struct".fields) |column|
+        column_handling(column.type).deinit(allocator, @field(row, column.name));
 }
 
-/// Only for types supported by zqlite.
 fn clone(comptime T: type, allocator: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!T {
+    comptime std.debug.assert(isZqliteType(T));
+
     return switch (@typeInfo(T)) {
         .pointer => |pointer| pointer: {
             const cloned = if (pointer.sentinel()) |sentinel|
@@ -506,8 +543,9 @@ fn clone(comptime T: type, allocator: std.mem.Allocator, value: anytype) std.mem
     };
 }
 
-/// Only for types supported by zqlite.
 fn free(comptime T: type, allocator: std.mem.Allocator, value: T) void {
+    comptime std.debug.assert(isZqliteType(T));
+
     switch (@typeInfo(T)) {
         .pointer => |pointer| allocator.free(switch (pointer.size) {
             .slice => value,
@@ -529,6 +567,31 @@ fn free(comptime T: type, allocator: std.mem.Allocator, value: T) void {
 
         else => @compileError("unsupported type " ++ @typeName(T)),
     }
+}
+
+/// Returns whether a type is natively supported by zqlite.
+fn isZqliteType(comptime T: type) bool {
+    // source of truth is `zqlite.Stmt._bind()`
+    return switch (@typeInfo(T)) {
+        .null,
+        .int,
+        .comptime_int,
+        .float,
+        .comptime_float,
+        .bool,
+        => true,
+        .pointer => |pointer| switch (pointer.size) {
+            .one => switch (@typeInfo(pointer.child)) {
+                .array => |arr| arr.child == u8,
+                else => false,
+            },
+            .slice => pointer.child == u8,
+            else => false,
+        },
+        .optional => |optional| isZqliteType(optional.child),
+        .@"struct" => T == zqlite.Blob,
+        else => false,
+    };
 }
 
 test {
