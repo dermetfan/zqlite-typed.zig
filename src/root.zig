@@ -354,16 +354,18 @@ test SimpleDelete {
     , SimpleDelete("table", struct { foo: void, bar: void }).sql);
 }
 
-fn columnInfo(comptime Column: type) struct {
+fn columnInfo(Column: type) struct {
+    /// Also implies a deinit() function.
     has_from_zqlite: bool,
     has_to_zqlite: bool,
-    has_deinit: bool,
     zqlite_type: type,
 } {
-    const is_struct = @typeInfo(Column) == .@"struct";
+    const has_from_zqlite = std.meta.hasFn(Column, "fromZqlite");
+    const has_to_zqlite = std.meta.hasFn(Column, "toZqlite");
+    const has_deinit = std.meta.hasFn(Column, "deinit");
 
-    const has_from_zqlite = is_struct and @hasDecl(Column, "fromZqlite");
-    const has_to_zqlite = is_struct and @hasDecl(Column, "toZqlite");
+    if (has_from_zqlite and !has_deinit)
+        @compileError(@typeName(Column) ++ ".fromZqlite() implies that a deinit() must exist");
 
     const from_zqlite_type = if (has_from_zqlite) @typeInfo(@TypeOf(Column.fromZqlite)).@"fn".params[1].type.?;
     const to_zqlite_type = if (has_to_zqlite) utils.meta.FnErrorUnionPayload(@TypeOf(Column.toZqlite));
@@ -371,14 +373,25 @@ fn columnInfo(comptime Column: type) struct {
     if (has_from_zqlite and has_to_zqlite and from_zqlite_type != to_zqlite_type)
         @compileError("Mismatched zqlite types for " ++ @typeName(Column) ++ ".{from,to}Zqlite(): " ++ @typeName(from_zqlite_type) ++ " and " ++ @typeName(to_zqlite_type));
 
+    if (has_from_zqlite and @TypeOf(Column.fromZqlite) != fn (std.mem.Allocator) std.mem.Allocator.Error!from_zqlite_type)
+        @compileError(@typeName(Column) ++ ".fromZqlite() has unsupported signature");
+
+    if (has_to_zqlite)
+        for ([_]type{
+            fn (Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
+            fn (*const Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
+            fn (*Column, std.mem.Allocator) std.mem.Allocator.Error!to_zqlite_type,
+        }) |Fn| {
+            if (@TypeOf(Column.toZqlite) == Fn) break;
+        } else @compileError(@typeName(Column) ++ ".toZqlite() has unsupported signature");
+
     return .{
         .has_from_zqlite = has_from_zqlite,
         .has_to_zqlite = has_to_zqlite,
-        .has_deinit = is_struct and @hasDecl(Column, "deinit"),
-        .zqlite_type = if (has_to_zqlite)
-            to_zqlite_type
-        else if (has_from_zqlite)
+        .zqlite_type = if (has_from_zqlite)
             from_zqlite_type
+        else if (has_to_zqlite)
+            to_zqlite_type
         else
             Column,
     };
@@ -432,7 +445,7 @@ pub fn structFromRow(
         const Column = @FieldType(Row, @tagName(column));
         const value = @field(row, @tagName(column));
 
-        if (columnInfo(Column).has_deinit)
+        if (columnInfo(Column).has_from_zqlite)
             value.deinit(allocator)
         else
             free(Column, allocator, value);
@@ -442,10 +455,9 @@ pub fn structFromRow(
         defer columns_idx += 1;
 
         const Column = @FieldType(Row, @tagName(column));
-        const column_info = columnInfo(Column);
         const value = column_fn(zqlite_row, column);
 
-        @field(row, @tagName(column)) = if (column_info.has_from_zqlite)
+        @field(row, @tagName(column)) = if (columnInfo(Column).has_from_zqlite)
             try Column.fromZqlite(allocator, value)
         else
             try clone(Column, allocator, value);
@@ -458,7 +470,7 @@ pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: 
     inline for (@typeInfo(Row).@"struct".fields) |column| {
         const value = @field(row, column.name);
 
-        if (columnInfo(column.type).has_deinit)
+        if (columnInfo(column.type).has_from_zqlite)
             value.deinit(allocator)
         else
             free(column.type, allocator, value);
@@ -469,10 +481,10 @@ pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: 
 fn clone(comptime T: type, allocator: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!T {
     return switch (@typeInfo(T)) {
         .pointer => |pointer| pointer: {
-            const cloned = if (pointer.sentinel_ptr == null)
-                try allocator.dupe(pointer.child, value)
+            const cloned = if (pointer.sentinel()) |sentinel|
+                try allocator.dupeSentinel(pointer.child, value, sentinel)
             else
-                try allocator.dupeSentinel(pointer.child, value, 0);
+                try allocator.dupe(pointer.child, value);
 
             break :pointer switch (pointer.size) {
                 .slice => cloned,
@@ -483,10 +495,14 @@ fn clone(comptime T: type, allocator: std.mem.Allocator, value: anytype) std.mem
 
         .optional => |optional| if (value) |v| try clone(optional.child, allocator, v) else null,
 
-        else => switch (T) {
+        .@"struct" => switch (T) {
             zqlite.Blob => .{ .value = try clone(@FieldType(T, .value), allocator, value) },
-            else => value,
+            else => @compileError("unsupported struct \"" ++ @typeName(T) ++ "\""),
         },
+
+        .bool, .int, .float => value,
+
+        else => @compileError("unsupported type " ++ @typeName(T)),
     };
 }
 
@@ -504,10 +520,14 @@ fn free(comptime T: type, allocator: std.mem.Allocator, value: T) void {
 
         .optional => if (value) |v| free(@TypeOf(v), allocator, v),
 
-        else => switch (T) {
+        .@"struct" => switch (T) {
             zqlite.Blob => allocator.free(value.value),
-            else => {},
+            else => @compileError("unsupported struct " ++ @typeName(T)),
         },
+
+        .bool, .int, .float => {},
+
+        else => @compileError("unsupported type " ++ @typeName(T)),
     }
 }
 
